@@ -14,11 +14,13 @@ if [[ -f "$CERT_DIR/server.crt" && "${FORCE:-0}" != "1" ]]; then
 fi
 
 # SAN обязателен: современные браузеры и curl не смотрят на CN
+SAN="DNS:localhost,IP:127.0.0.1"
+[ "$DOMAIN" != "localhost" ] && SAN="DNS:$DOMAIN,$SAN"
 openssl req -x509 -nodes -newkey rsa:2048 -sha256 -days "$DAYS" \
   -keyout "$CERT_DIR/server.key" \
   -out "$CERT_DIR/server.crt" \
   -subj "/CN=$DOMAIN" \
-  -addext "subjectAltName=DNS:$DOMAIN,DNS:localhost,IP:127.0.0.1"
+  -addext "subjectAltName=$SAN"
 
 chmod 600 "$CERT_DIR/server.key"
 chmod 644 "$CERT_DIR/server.crt"
