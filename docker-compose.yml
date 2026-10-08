@@ -1,14 +1,44 @@
 name: local-web-stack
 
+# Общие настройки для всех сервисов: политика рестарта, запрет повышения привилегий, ротация логов
+x-defaults: &defaults
+  restart: unless-stopped
+  security_opt:
+    - no-new-privileges:true
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "3"
+
 services:
   nginx:
+    <<: *defaults
     image: nginx:1.27-alpine
     ports:
-      - "80:80"
-      - "443:443"
+      # По умолчанию только loopback: стенд не виден в локальной сети
+      - "${BIND_ADDR:-127.0.0.1}:80:80"
+      - "${BIND_ADDR:-127.0.0.1}:443:443"
     volumes:
       - ./nginx/nginx.conf:/etc/nginx/conf.d/default.conf:ro
       - ./nginx/certs:/etc/nginx/certs:ro
+    # Корневая ФС только для чтения; nginx пишет кэш, pid и временные файлы в tmpfs
+    read_only: true
+    tmpfs:
+      - /var/cache/nginx
+      - /var/run
+      - /tmp
+    sysctls:
+      net.core.somaxconn: 4096
+    ulimits:
+      nofile:
+        soft: 65535
+        hard: 65535
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 256M
     depends_on:
       backend:
         condition: service_healthy
@@ -18,22 +48,36 @@ services:
       interval: 10s
       timeout: 3s
       retries: 3
-    restart: unless-stopped
 
   backend:
+    <<: *defaults
     image: python:3.12-alpine
     command: ["python", "-u", "/app/app.py"]
     user: "65534:65534"
     read_only: true
+    # tini как PID 1: пересылает SIGTERM, контейнер останавливается сразу, а не через 10 с по SIGKILL
+    init: true
+    cap_drop: [ALL]
+    tmpfs:
+      - /tmp
     environment:
       APP_PORT: "8080"
       DB_HOST: postgres
       DB_PORT: "5432"
+      DB_NAME: ${POSTGRES_DB:?set POSTGRES_DB in .env}
+      DB_USER: ${POSTGRES_USER:?set POSTGRES_USER in .env}
+      DB_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
       REDIS_HOST: redis
       REDIS_PORT: "6379"
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?set REDIS_PASSWORD in .env}
     volumes:
       - ./app:/app:ro
     expose: ["8080"]
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 256M
     depends_on:
       postgres:
         condition: service_healthy
@@ -46,9 +90,9 @@ services:
       timeout: 3s
       retries: 3
       start_period: 5s
-    restart: unless-stopped
 
   postgres:
+    <<: *defaults
     image: postgres:15-alpine
     environment:
       POSTGRES_DB: ${POSTGRES_DB:?set POSTGRES_DB in .env}
@@ -56,6 +100,11 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
     volumes:
       - pgdata:/var/lib/postgresql/data
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
     networks: [backend]
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
@@ -63,10 +112,13 @@ services:
       timeout: 3s
       retries: 5
       start_period: 20s
-    restart: unless-stopped
 
   redis:
+    <<: *defaults
     image: redis:7-alpine
+    # Запуск через sh -c обходит переключение на пользователя в entrypoint, поэтому пользователь задан явно
+    user: redis
+    cap_drop: [ALL]
     environment:
       REDIS_PASSWORD: ${REDIS_PASSWORD:?set REDIS_PASSWORD in .env}
       # redis-cli сам читает пароль из REDISCLI_AUTH, он не светится в аргументах
@@ -74,13 +126,18 @@ services:
     command: ["sh", "-c", "exec redis-server --requirepass \"$$REDIS_PASSWORD\" --maxmemory 128mb --maxmemory-policy allkeys-lru"]
     volumes:
       - redisdata:/data
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          # Запас над maxmemory: накладные расходы и copy-on-write при fork для BGSAVE
+          memory: 256M
     networks: [backend]
     healthcheck:
       test: ["CMD-SHELL", "redis-cli ping | grep -q PONG"]
       interval: 10s
       timeout: 3s
       retries: 5
-    restart: unless-stopped
 
 networks:
   frontend:
