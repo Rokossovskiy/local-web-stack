@@ -36,10 +36,18 @@ docker compose down        # данные в volumes сохраняются
 docker compose down -v     # полная очистка
 ```
 
-## Ограничения и что изменить для production
+## Сверх задания
 
-- Сертификат self-signed. В проде нужен Let's Encrypt через certbot или cert-manager, а также HSTS.
-- Секреты лежат в `.env`. В проде их лучше хранить в Vault или Docker/K8s secrets.
-- На Docker Desktop все запросы приходят с IP шлюза, поэтому лимит общий. За балансировщиком нужен `real_ip_header` с `set_real_ip_from`.
-- Ещё стоит добавить лимиты CPU и памяти, централизованные логи и бэкапы Postgres.
+- `tests/smoke.sh` — автоматическая проверка требований: редирект, health, лимит тела 413, rate limiting 429/503.
+- CI для GitHub Actions и GitLab CI: shellcheck, проверка compose, gitleaks, подъём стека и smoke-тесты.
+- Deploy — ручной запуск с approval через environment, по SSH и rsync. Реального сервера нет, джоба показывает схему промоута.
+- `ops/sysctl/99-web-stack.conf` — тюнинг ядра Linux-хоста; применяется вручную, значения подбираются нагрузочным тестом.
+
+## Что бы я сделал для production
+
+- Сертификаты от ACME (Let's Encrypt) вместо self-signed.
+- Docker secrets или Vault вместо `.env`.
+- Закрепление образов по digest, сканирование образов Trivy в CI.
+- Метрики: nginx exporter, postgres exporter, redis exporter, Prometheus и алерты.
+- Бэкапы PostgreSQL с регулярной проверкой восстановления.
 
